@@ -188,43 +188,53 @@ def power_cheb(
     A, V,
     eig_min: float, eig_max: float,
     outer_iter: int = 10, inner_iter: int = 10,
-    *, backend: str | None = None, plots = False
+    *, backend: str | None = None, plots = False,
+    callback: Optional[Callable[[object, object, object], None]] = None,
 ) -> Tuple:
     """
     Block power + Chebyshev accelerator with Rayleigh–Ritz each outer step.
     Returns (w, V), with w ascending.
+    If `callback` is provided, it is invoked as ``callback(V, w, relres)`` after
+    each outer iteration.
     """
     Bk = _detect_backend(V, prefer=backend)
     xp = Bk.xp
 
     V = _to_xp_array(V, xp)
 
-    iplot=0
+    iplot = 0
     for _ in range(outer_iter):
         V = block_chebyshev(A, V, eig_min, eig_max, maxiter=inner_iter, backend=Bk.name)
         # Orthonormalize
-        Q, _ = xp.linalg.qr(V, mode='reduced')
+        Q, _ = xp.linalg.qr(V, mode="reduced")
         V = Q
         # Rayleigh–Ritz
         VAV = V.T @ (A @ V if hasattr(A, "__matmul__") else A.matmat(V))
         w, W = xp.linalg.eigh(VAV)
         V = V @ W
-        # Optional residual print (comment out if noisy)
-        AV = (A @ V) if hasattr(A, "__matmul__") else A.matmat(V)
-        R = AV - V * w[xp.newaxis, :]
-        norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
-        residuals = norms / xp.maximum(xp.abs(w), xp.finfo(V.dtype).eps)
-        # print(float(residuals.min().item()), float(residuals.max().item()))
+
+        # Residuals for callback/plots
+        if callback is not None or plots:
+            AV = (A @ V) if hasattr(A, "__matmul__") else A.matmat(V)
+            R = AV - V * w[xp.newaxis, :]
+            norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
+            residuals = norms / xp.maximum(xp.abs(w), xp.finfo(V.dtype).eps)
+        else:
+            residuals = None
+
+        if callback is not None:
+            callback(V, w, residuals)
+
         if plots:
             plt.close()
-            plt.loglog(w,residuals)
+            plt.loglog(w, residuals)
             plt.xlabel("approximate eigenvalues")
             plt.ylabel("eigenvector residual")
             plt.title(f"min(eig)={xp.amin(w)},max(eig)={xp.amax(w)}")
             plt.xlim(1e-8,1e-3)
             plt.ylim(1e-12,1.0)
             plt.savefig(f"plots/{str(iplot).zfill(3)}.svg")
-            iplot=iplot+1
+            iplot = iplot + 1
 
     return w, V
 
@@ -543,7 +553,7 @@ class MinresMultiRHS:
 
 
 
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Optional
 
 ApplyInverseCB = Callable[[object, object], object]  # (A, V) -> X ≈ A^{-1} V
 
@@ -553,11 +563,14 @@ def power_solve_cb(
     *,
     outer_iter: int = 10,
     backend: str | None = None,
-    plots: bool = False
+    plots: bool = False,
+    callback: Optional[Callable[[object, object, object], None]] = None,
 ) -> Tuple[object, object]:
     """
     Block power + user-supplied inverse callback with Rayleigh–Ritz each outer it.
     `apply_inverse_cb(A, V)` must return X ≈ A^{-1} V (same shape as V).
+    If `callback` is given, it receives ``(V, w, relres)`` after each outer
+    iteration.
     """
     Bk = _detect_backend(V, A, prefer=backend)
     xp = Bk.xp
@@ -578,8 +591,8 @@ def power_solve_cb(
         w, W = xp.linalg.eigh(VAV)
         V = V @ W
 
-        # Optional residual plot
-        if plots:
+        # Residuals for callback/plots
+        if callback is not None or plots:
             AV = (A @ V) if hasattr(A, "__matmul__") else A.matmat(V)
             R = AV - V * w[xp.newaxis, :]
             norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
@@ -587,7 +600,14 @@ def power_solve_cb(
             # Guard near-zero Ritz values so we don't blow up; scale by the spectrum size.
             absw_floor = xp.finfo(V.dtype).eps * xp.maximum(1.0, xp.max(absw))
             den = xp.maximum(absw, absw_floor)
-            residuals = norms / den 
+            residuals = norms / den
+        else:
+            residuals = None
+
+        if callback is not None:
+            callback(V, w, residuals)
+
+        if plots:
             plt.close()
             plt.loglog(w, residuals)
             plt.xlabel("approximate eigenvalues")
