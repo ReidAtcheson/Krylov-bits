@@ -22,9 +22,6 @@ import numpy as _np
 import scipy.sparse as _sps
 from scipy.sparse.linalg import LinearOperator as _NpLinearOperator, minres as _np_minres
 from scipy.linalg import solve_triangular as _np_solve_tri
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 
 # ------------------------ Backend plumbing ------------------------
@@ -188,7 +185,7 @@ def power_cheb(
     A, V,
     eig_min: float, eig_max: float,
     outer_iter: int = 10, inner_iter: int = 10,
-    *, backend: str | None = None, plots = False,
+    *, backend: str | None = None,
     callback: Optional[Callable[[object, object, object], None]] = None,
 ) -> Tuple:
     """
@@ -202,7 +199,6 @@ def power_cheb(
 
     V = _to_xp_array(V, xp)
 
-    iplot = 0
     for _ in range(outer_iter):
         V = block_chebyshev(A, V, eig_min, eig_max, maxiter=inner_iter, backend=Bk.name)
         # Orthonormalize
@@ -213,8 +209,8 @@ def power_cheb(
         w, W = xp.linalg.eigh(VAV)
         V = V @ W
 
-        # Residuals for callback/plots
-        if callback is not None or plots:
+        # Residuals for callback
+        if callback is not None:
             AV = (A @ V) if hasattr(A, "__matmul__") else A.matmat(V)
             R = AV - V * w[xp.newaxis, :]
             norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
@@ -224,17 +220,6 @@ def power_cheb(
 
         if callback is not None:
             callback(V, w, residuals)
-
-        if plots:
-            plt.close()
-            plt.loglog(w, residuals)
-            plt.xlabel("approximate eigenvalues")
-            plt.ylabel("eigenvector residual")
-            plt.title(f"min(eig)={xp.amin(w)},max(eig)={xp.amax(w)}")
-            plt.xlim(1e-8,1e-3)
-            plt.ylim(1e-12,1.0)
-            plt.savefig(f"plots/{str(iplot).zfill(3)}.svg")
-            iplot = iplot + 1
 
     return w, V
 
@@ -563,7 +548,6 @@ def power_solve_cb(
     *,
     outer_iter: int = 10,
     backend: str | None = None,
-    plots: bool = False,
     callback: Optional[Callable[[object, object, object], None]] = None,
 ) -> Tuple[object, object]:
     """
@@ -576,7 +560,6 @@ def power_solve_cb(
     xp = Bk.xp
     V = _to_xp_array(V, xp)
 
-    iplot = 0
     for _ in range(outer_iter):
         # Inverse-like step: X ≈ A^{-1} V  (caller controls method, tolerance, etc.)
         V = apply_inverse_cb(A, V)
@@ -591,8 +574,8 @@ def power_solve_cb(
         w, W = xp.linalg.eigh(VAV)
         V = V @ W
 
-        # Residuals for callback/plots
-        if callback is not None or plots:
+        # Residuals for callback
+        if callback is not None:
             AV = (A @ V) if hasattr(A, "__matmul__") else A.matmat(V)
             R = AV - V * w[xp.newaxis, :]
             norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
@@ -606,17 +589,6 @@ def power_solve_cb(
 
         if callback is not None:
             callback(V, w, residuals)
-
-        if plots:
-            plt.close()
-            plt.loglog(w, residuals)
-            plt.xlabel("approximate eigenvalues")
-            plt.ylabel("eigenvector residual")
-            plt.xlim(1e-9,1e-3)
-            plt.ylim(1e-12,1.0)
-            plt.title(f"min(eig)={float(xp.amin(w))}, max(eig)={float(xp.amax(w))}")
-            plt.savefig(f"plots/{str(iplot).zfill(3)}.svg")
-            iplot += 1
 
     return w, V
 
