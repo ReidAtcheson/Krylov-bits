@@ -33,6 +33,12 @@ def main():
     parser.add_argument("--backend", choices=["numpy", "cupy"], default=None, help="array backend")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
     parser.add_argument("--power-iters", type=int, default=5, help="block power iterations")
+    parser.add_argument(
+        "--inner-rtol", type=float, default=1e-6, help="tolerance for inner MINRES solves"
+    )
+    parser.add_argument(
+        "--inner-maxiter", type=int, default=50, help="max iterations for inner MINRES solves"
+    )
     args = parser.parse_args()
 
     A = random_nonsymmetric_matrix(
@@ -72,7 +78,9 @@ def main():
         else:
             logger.info("all %d eigenpairs converged", num)
 
-    inv_cb = make_minres_callback(rtol=1e-6, backend=args.backend)
+    inv_cb = make_minres_callback(
+        rtol=args.inner_rtol, maxiter=args.inner_maxiter, backend=args.backend
+    )
     w, V = power_solve_cb(
         Asym,
         V0,
@@ -91,8 +99,11 @@ def main():
 
     def solve_cb(xh):
         xh_top = xh[:n]
-        relerr = xp.max(xp.abs(x_true - xh_top) / xp.maximum(1e-14, xp.abs(x_true)))
-        logger.info("relative error %.3e", float(relerr))
+        relerr = xp.max(
+            xp.abs(x_true - xh_top) / xp.maximum(1e-14, xp.abs(x_true))
+        )
+        relres = float(xp.linalg.norm(b - A @ xh_top) / xp.linalg.norm(b))
+        logger.info("rel err %.3e rel resid %.3e", float(relerr), relres)
 
     x_sol, info = solver.solve(rhs, tol=1e-8, callback=solve_cb)
     logger.info("MINRES info: %s", info)
