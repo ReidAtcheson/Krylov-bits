@@ -408,7 +408,7 @@ class DeflatedMinres:
             if callback is not None:
                 callback(self._reconstruct(b, xh))
 
-        xh, info = Bk.minres(op, rhs, tol=tol, maxiter=maxiter, callback=cb)
+        xh, info = Bk.minres(op, rhs, rtol=tol, maxiter=maxiter, callback=cb)
         x = self._reconstruct(b, xh)
         return x, info
 
