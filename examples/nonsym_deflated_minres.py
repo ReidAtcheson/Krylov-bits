@@ -69,6 +69,25 @@ def main():
         norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
         denom = Anorm * xp.sqrt(xp.sum(xp.abs(V) ** 2, axis=0))
         be = norms / denom
+        pos = w[w > 0]
+        neg = w[w < 0]
+        if pos.size:
+            max_pos = float(pos[xp.argmax(xp.abs(pos))])
+            min_pos = float(pos[xp.argmin(xp.abs(pos))])
+        else:
+            max_pos = min_pos = float("nan")
+        if neg.size:
+            max_neg = float(neg[xp.argmin(neg)])
+            min_neg = float(neg[xp.argmax(neg)])
+        else:
+            max_neg = min_neg = float("nan")
+        logger.info(
+            "eig max+ %.3e min+ %.3e max- %.3e min- %.3e",
+            max_pos,
+            min_pos,
+            max_neg,
+            min_neg,
+        )
         thresh = 1e-8
         converged = be < thresh
         num = int(xp.count_nonzero(converged))
@@ -89,11 +108,6 @@ def main():
         backend=args.backend,
         callback=power_cb,
     )
-
-    mask = w > 0
-    if not xp.any(mask):
-        raise RuntimeError("No positive eigenvalues found for deflation")
-    V = V[:, mask]
 
     solver = DeflatedMinres(Asym, V, backend=args.backend)
 
