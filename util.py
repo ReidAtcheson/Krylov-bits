@@ -149,6 +149,67 @@ def random_expander_like_matrix(
     return B
 
 
+def random_nonsymmetric_matrix(
+    n: int,
+    nnz_per_row: int,
+    seed: int | None = None,
+    *,
+    backend: str | None = None,
+    dtype=None,
+):
+    """Generate a random nonsymmetric sparse matrix.
+
+    Each row of the returned :math:`n \times n` matrix contains exactly
+    ``nnz_per_row`` nonzeros.  The diagonal entry of each row is always
+    included and the remaining ``nnz_per_row-1`` column indices are sampled
+    uniformly at random without replacement from the off-diagonal positions.
+
+    Every nonzero value is drawn independently from the uniform distribution
+    over ``(-1, 1)``.  No effort is made to symmetrize the result, so in
+    general the matrix is nonsymmetric.
+
+    Works with NumPy/SciPy or CuPy/cupyx depending on ``backend``.
+
+    Returns
+    -------
+    csr_matrix
+        ``scipy.sparse.csr_matrix`` or ``cupyx.scipy.sparse.csr_matrix``.
+    """
+
+    if not (1 <= nnz_per_row <= n):
+        raise ValueError("Require 1 <= nnz_per_row <= n.")
+
+    Bk = _Backend(backend or ("cupy" if _CUPY_AVAILABLE else "numpy"))
+    xp = Bk.xp
+    sp = Bk.sp
+
+    rng = _np.random.default_rng(seed)
+
+    rows = _np.repeat(_np.arange(n), nnz_per_row)
+    # Sample off-diagonal columns for each row
+    samples = _np.empty((n, nnz_per_row - 1), dtype=_np.int64)
+    base = _np.arange(n - 1)
+    for i in range(n):
+        cols = rng.choice(base, size=nnz_per_row - 1, replace=False)
+        cols = cols + (cols >= i)  # shift to skip diagonal
+        samples[i, :] = cols
+
+    cols = _np.concatenate([_np.arange(n)[:, None], samples], axis=1).ravel()
+
+    rows_x = xp.asarray(rows, dtype=xp.int64)
+    cols_x = xp.asarray(cols, dtype=xp.int64)
+
+    if dtype is None:
+        dtype = xp.float32
+
+    data = rng.uniform(-1.0, 1.0, size=rows.shape)
+    data_x = xp.asarray(data, dtype=dtype)
+
+    A = sp.coo_matrix((data_x, (rows_x, cols_x)), shape=(n, n)).tocsr()
+    A.sum_duplicates()
+    return A
+
+
 def block_chebyshev(
     A, B,
     eig_min: float, eig_max: float, maxiter: int,
@@ -622,10 +683,16 @@ def make_minres_callback(rtol: float = 1e-6, maxiter: int | None = None, *, back
 #   b = _np.random.randn(1024)
 #   x, info = solver.solve(b)
 #
+#   A = random_nonsymmetric_matrix(1024, 4, seed=0, backend='numpy')
+#   ...
+#
 # GPU (CuPy):
 #   A = random_expander_like_matrix(1024, 4, seed=0, backend='cupy')
 #   V = _cp.linalg.qr(_cp.random.standard_normal((1024,16)))[0]
 #   solver = DeflatedMinres(A, V, backend='cupy')
 #   b = _cp.random.standard_normal(1024)
 #   x, info = solver.solve(b)
+#
+#   A = random_nonsymmetric_matrix(1024, 4, seed=0, backend='cupy')
+#   ...
 
