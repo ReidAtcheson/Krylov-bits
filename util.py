@@ -310,13 +310,12 @@ class DeflatedMinres:
         self.AV = Bk.asfortranarray(AV)
 
         VAV = self.V.T @ self.AV
-        self.L = xp.linalg.cholesky(VAV)
+        self.VAV_inv = xp.linalg.inv(VAV)
 
         # Work buffers
         self._buf_Ax = xp.empty((n,), dtype=self.V.dtype, order='C')
         self._buf_t  = xp.empty((k,), dtype=self.V.dtype, order='C')
         self._buf_z  = xp.empty((k,), dtype=self.V.dtype, order='C')
-        self._buf_y  = xp.empty((n,), dtype=self.V.dtype, order='C')
 
         self._buf_tb = xp.empty((k,), dtype=self.V.dtype, order='C')
         self._buf_yb = xp.empty((k,), dtype=self.V.dtype, order='C')
@@ -348,10 +347,8 @@ class DeflatedMinres:
         # 2) t = V^T Ax  -> _buf_t
         self._buf_t = self.V.T @ self._buf_Ax
 
-        # 3) z = (VAV)^{-1} t via Cholesky
-        y = self._Bk.solve_tri(self.L, self._buf_t, lower=True, overwrite_b=False, check_finite=False)
-        z = self._Bk.solve_tri(self.L.T, y, lower=False, overwrite_b=False, check_finite=False)
-        self._Bk.copyto(self._buf_z, z)
+        # 3) z = (VAV)^{-1} t
+        self._buf_z = self.VAV_inv @ self._buf_t
 
         # 4) y = Ax - AV @ z  (return a fresh vector)
         y_out = self._buf_Ax.copy()
@@ -361,9 +358,7 @@ class DeflatedMinres:
     # rhs = (I - A V (VAV)^{-1} V^T) b
     def _deflated_rhs(self, b):
         self._buf_tb = self.V.T @ b
-        y = self._Bk.solve_tri(self.L, self._buf_tb, lower=True, overwrite_b=False, check_finite=False)
-        y = self._Bk.solve_tri(self.L.T, y, lower=False, overwrite_b=False, check_finite=False)
-        self._Bk.copyto(self._buf_yb, y)
+        self._buf_yb = self.VAV_inv @ self._buf_tb
         rhs = b - (self.AV @ self._buf_yb)
         return rhs
 
@@ -375,9 +370,7 @@ class DeflatedMinres:
 
         self._A_matvec(xh, out=self._buf_Axh)         # A xh
         self._buf_txh = self.V.T @ self._buf_Axh      # V^T A xh
-        y = self._Bk.solve_tri(self.L, self._buf_txh, lower=True, overwrite_b=False, check_finite=False)
-        y = self._Bk.solve_tri(self.L.T, y, lower=False, overwrite_b=False, check_finite=False)
-        self._Bk.copyto(self._buf_zxh, y)
+        self._buf_zxh = self.VAV_inv @ self._buf_txh
 
         self._Bk.copyto(self._buf_Vz, self.V @ self._buf_zxh)
         x = xh - self._buf_Vz
@@ -408,7 +401,7 @@ class DeflatedMinres:
             if callback is not None:
                 callback(self._reconstruct(b, xh))
 
-        xh, info = Bk.minres(op, rhs, tol=tol, maxiter=maxiter, callback=cb)
+        xh, info = Bk.minres(op, rhs, rtol=tol, maxiter=maxiter, callback=cb)
         x = self._reconstruct(b, xh)
         return x, info
 
