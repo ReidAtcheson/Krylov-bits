@@ -19,9 +19,22 @@ except Exception:
     _CUPY_AVAILABLE = False
 
 import numpy as _np
-import scipy.sparse as _sps
-from scipy.sparse.linalg import LinearOperator as _NpLinearOperator, minres as _np_minres
-from scipy.linalg import solve_triangular as _np_solve_tri
+
+# Optional SciPy import (only if available)
+try:
+    import scipy.sparse as _sps
+    from scipy.sparse.linalg import (
+        LinearOperator as _NpLinearOperator,
+        minres as _np_minres,
+    )
+    from scipy.linalg import solve_triangular as _np_solve_tri
+    _SCIPY_AVAILABLE = True
+except Exception:
+    _sps = None
+    _NpLinearOperator = None
+    _np_minres = None
+    _np_solve_tri = None
+    _SCIPY_AVAILABLE = False
 
 
 # ------------------------ Backend plumbing ------------------------
@@ -37,15 +50,21 @@ class _Backend:
             self.sp = _cpxs
             self.LinearOperator = _CuLinearOperator
             self.minres = _cu_minres
+            self.minres_tol_kw = "tol"
             self.solve_tri = _cu_solve_tri
             self.asfortranarray = _cp.asfortranarray
             self.copyto = _cp.copyto
         elif name == "numpy":
+            if not _SCIPY_AVAILABLE:
+                raise RuntimeError(
+                    "NumPy backend requested but SciPy is not available."
+                )
             self.name = "numpy"
             self.xp = _np
             self.sp = _sps
             self.LinearOperator = _NpLinearOperator
             self.minres = _np_minres
+            self.minres_tol_kw = "rtol"
             self.solve_tri = _np_solve_tri
             self.asfortranarray = _np.asfortranarray
             self.copyto = _np.copyto
@@ -401,7 +420,8 @@ class DeflatedMinres:
             if callback is not None:
                 callback(self._reconstruct(b, xh))
 
-        xh, info = Bk.minres(op, rhs, rtol=tol, maxiter=maxiter, callback=cb)
+        minres_kw = {Bk.minres_tol_kw: tol, "maxiter": maxiter, "callback": cb}
+        xh, info = Bk.minres(op, rhs, **minres_kw)
         x = self._reconstruct(b, xh)
         return x, info
 

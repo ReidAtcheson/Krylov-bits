@@ -61,7 +61,11 @@ def main():
     V0 = xp.asarray(rng.standard_normal((2 * n, args.k)))
     V0, _ = xp.linalg.qr(V0)
 
-    Anorm = float(xp.abs(Asym).sum(axis=1).max())
+    Asym_abs = Asym.copy()
+    Asym_abs.data = xp.abs(Asym_abs.data)
+    row_sums = Asym_abs.sum(axis=1)
+    row_sums = xp.asarray(row_sums).ravel()
+    Anorm = float(row_sums.max())
 
     def power_cb(V, w, _):
         AV = Asym @ V
