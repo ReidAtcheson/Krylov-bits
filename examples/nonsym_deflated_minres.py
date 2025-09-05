@@ -34,6 +34,12 @@ def main():
     parser.add_argument("--seed", type=int, default=0, help="random seed")
     parser.add_argument("--power-iters", type=int, default=5, help="block power iterations")
     parser.add_argument(
+        "--dtype",
+        choices=["fp32", "fp64"],
+        default="fp32",
+        help="floating point precision",
+    )
+    parser.add_argument(
         "--inner-rtol", type=float, default=1e-6, help="tolerance for inner MINRES solves"
     )
     parser.add_argument(
@@ -41,15 +47,21 @@ def main():
     )
     args = parser.parse_args()
 
+    dtype = np.float32 if args.dtype == "fp32" else np.float64
+
     A = random_nonsymmetric_matrix(
-        args.n, args.nnz_per_row, seed=args.seed, backend=args.backend
+        args.n,
+        args.nnz_per_row,
+        seed=args.seed,
+        backend=args.backend,
+        dtype=dtype,
     )
     Bk = _detect_backend(A, prefer=args.backend)
     xp = Bk.xp
     sp = Bk.sp
 
     rng = np.random.default_rng(args.seed)
-    x_true = xp.asarray(rng.standard_normal(args.n))
+    x_true = xp.asarray(rng.standard_normal(args.n), dtype=dtype)
     b = A @ x_true
 
     Asym = build_symmetrized(A, Bk=Bk)
@@ -58,7 +70,7 @@ def main():
     rhs = xp.zeros(2 * n, dtype=A.dtype)
     rhs[n:] = b
 
-    V0 = xp.asarray(rng.standard_normal((2 * n, args.k)))
+    V0 = xp.asarray(rng.standard_normal((2 * n, args.k)), dtype=dtype)
     V0, _ = xp.linalg.qr(V0)
 
     Asym_abs = Asym.copy()
