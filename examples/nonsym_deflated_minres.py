@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime
 import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -13,7 +14,6 @@ from util import (
     _detect_backend,
 )
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -26,10 +26,16 @@ def build_symmetrized(A, *, Bk):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Deflated MINRES on a symmetrized nonsymmetric system")
-    parser.add_argument("n", type=int, nargs="?", default=64, help="matrix dimension")
-    parser.add_argument("nnz_per_row", type=int, nargs="?", default=4, help="nonzeros per row in A")
-    parser.add_argument("k", type=int, nargs="?", default=4, help="number of eigenpairs/deflation vectors")
+    parser = argparse.ArgumentParser(
+        description="Deflated MINRES on a symmetrized nonsymmetric system"
+    )
+    parser.add_argument("--n", type=int, default=64, help="matrix dimension")
+    parser.add_argument(
+        "--nnz-per-row", type=int, default=4, help="nonzeros per row in A"
+    )
+    parser.add_argument(
+        "--k", type=int, default=4, help="number of eigenpairs/deflation vectors"
+    )
     parser.add_argument("--backend", choices=["numpy", "cupy"], default=None, help="array backend")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
     parser.add_argument("--power-iters", type=int, default=5, help="block power iterations")
@@ -45,7 +51,29 @@ def main():
     parser.add_argument(
         "--inner-maxiter", type=int, default=50, help="max iterations for inner MINRES solves"
     )
+    parser.add_argument(
+        "--minres-tol", type=float, default=1e-8, help="tolerance for final MINRES solve"
+    )
+    parser.add_argument(
+        "--minres-maxiter", type=int, default=None, help="max iterations for final MINRES solve"
+    )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        help="path to log file (default: nonsym_minres_<timestamp>.log)",
+    )
     args = parser.parse_args()
+
+    if args.log_file is None:
+        args.log_file = f"nonsym_minres_{datetime.now():%Y%m%d_%H%M%S}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            logging.FileHandler(args.log_file),
+        ],
+    )
+    logger.info("logging to %s", args.log_file)
 
     dtype = np.float32 if args.dtype == "fp32" else np.float64
 
@@ -135,7 +163,9 @@ def main():
         relres = float(xp.linalg.norm(b - A @ xh_top) / xp.linalg.norm(b))
         logger.info("rel err %.3e rel resid %.3e", float(relerr), relres)
 
-    x_sol, info = solver.solve(rhs, tol=1e-8, callback=solve_cb)
+    x_sol, info = solver.solve(
+        rhs, tol=args.minres_tol, maxiter=args.minres_maxiter, callback=solve_cb
+    )
     logger.info("MINRES info: %s", info)
 
 
