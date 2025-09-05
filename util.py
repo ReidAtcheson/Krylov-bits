@@ -19,9 +19,22 @@ except Exception:
     _CUPY_AVAILABLE = False
 
 import numpy as _np
-import scipy.sparse as _sps
-from scipy.sparse.linalg import LinearOperator as _NpLinearOperator, minres as _np_minres
-from scipy.linalg import solve_triangular as _np_solve_tri
+
+# Optional SciPy import (only if available)
+try:
+    import scipy.sparse as _sps
+    from scipy.sparse.linalg import (
+        LinearOperator as _NpLinearOperator,
+        minres as _np_minres,
+    )
+    from scipy.linalg import solve_triangular as _np_solve_tri
+    _SCIPY_AVAILABLE = True
+except Exception:
+    _sps = None
+    _NpLinearOperator = None
+    _np_minres = None
+    _np_solve_tri = None
+    _SCIPY_AVAILABLE = False
 
 
 # ------------------------ Backend plumbing ------------------------
@@ -41,6 +54,10 @@ class _Backend:
             self.asfortranarray = _cp.asfortranarray
             self.copyto = _cp.copyto
         elif name == "numpy":
+            if not _SCIPY_AVAILABLE:
+                raise RuntimeError(
+                    "NumPy backend requested but SciPy is not available."
+                )
             self.name = "numpy"
             self.xp = _np
             self.sp = _sps
