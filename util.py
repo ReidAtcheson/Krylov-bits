@@ -50,6 +50,7 @@ class _Backend:
             self.sp = _cpxs
             self.LinearOperator = _CuLinearOperator
             self.minres = _cu_minres
+            self.minres_tol_kw = "tol"
             self.solve_tri = _cu_solve_tri
             self.asfortranarray = _cp.asfortranarray
             self.copyto = _cp.copyto
@@ -63,6 +64,7 @@ class _Backend:
             self.sp = _sps
             self.LinearOperator = _NpLinearOperator
             self.minres = _np_minres
+            self.minres_tol_kw = "rtol"
             self.solve_tri = _np_solve_tri
             self.asfortranarray = _np.asfortranarray
             self.copyto = _np.copyto
@@ -418,7 +420,8 @@ class DeflatedMinres:
             if callback is not None:
                 callback(self._reconstruct(b, xh))
 
-        xh, info = Bk.minres(op, rhs, rtol=tol, maxiter=maxiter, callback=cb)
+        minres_kw = {Bk.minres_tol_kw: tol, "maxiter": maxiter, "callback": cb}
+        xh, info = Bk.minres(op, rhs, **minres_kw)
         x = self._reconstruct(b, xh)
         return x, info
 
