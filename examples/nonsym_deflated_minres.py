@@ -44,7 +44,10 @@ def main():
         "--nnz-per-row", type=int, default=4, help="nonzeros per row in A"
     )
     parser.add_argument(
-        "--k", type=int, default=4, help="number of eigenpairs/deflation vectors"
+        "--k",
+        type=int,
+        default=4,
+        help="number of eigenpairs/deflation vectors (0 -> plain MINRES)"
     )
     parser.add_argument("--backend", choices=["numpy", "cupy"], default=None, help="array backend")
     parser.add_argument("--seed", type=int, default=0, help="random seed")
@@ -109,72 +112,74 @@ def main():
     rhs = xp.zeros(2 * n, dtype=A.dtype)
     rhs[n:] = b
 
-    V0 = xp.asarray(rng.standard_normal((2 * n, args.k)), dtype=dtype)
-    V0, _ = xp.linalg.qr(V0)
+    solver = None
+    if args.k > 0:
+        V0 = xp.asarray(rng.standard_normal((2 * n, args.k)), dtype=dtype)
+        V0, _ = xp.linalg.qr(V0)
 
-    Asym_abs = Asym.copy()
-    Asym_abs.data = xp.abs(Asym_abs.data)
-    row_sums = Asym_abs.sum(axis=1)
-    row_sums = xp.asarray(row_sums).ravel()
-    Anorm = float(row_sums.max())
+        Asym_abs = Asym.copy()
+        Asym_abs.data = xp.abs(Asym_abs.data)
+        row_sums = Asym_abs.sum(axis=1)
+        row_sums = xp.asarray(row_sums).ravel()
+        Anorm = float(row_sums.max())
 
-    power_it = 0
+        power_it = 0
 
-    def power_cb(V, w, _):
-        nonlocal power_it
-        power_it += 1
-        AV = Asym @ V
-        R = AV - V * w[xp.newaxis, :]
-        norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
-        denom = Anorm * xp.sqrt(xp.sum(xp.abs(V) ** 2, axis=0))
-        be = norms / denom
-        pos = w[w > 0]
-        neg = w[w < 0]
-        if pos.size:
-            max_pos = float(pos[xp.argmax(xp.abs(pos))])
-            min_pos = float(pos[xp.argmin(xp.abs(pos))])
-        else:
-            max_pos = min_pos = float("nan")
-        if neg.size:
-            max_neg = float(neg[xp.argmin(neg)])
-            min_neg = float(neg[xp.argmax(neg)])
-        else:
-            max_neg = min_neg = float("nan")
-        logger.info(
-            "eig iter %d max+ %.3e min+ %.3e max- %.3e min- %.3e",
-            power_it,
-            max_pos,
-            min_pos,
-            max_neg,
-            min_neg,
-        )
-        thresh = 1e-8
-        converged = be < thresh
-        num = int(xp.count_nonzero(converged))
-        if num < len(be):
-            next_be = float(be[~converged].min())
+        def power_cb(V, w, _):
+            nonlocal power_it
+            power_it += 1
+            AV = Asym @ V
+            R = AV - V * w[xp.newaxis, :]
+            norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
+            denom = Anorm * xp.sqrt(xp.sum(xp.abs(V) ** 2, axis=0))
+            be = norms / denom
+            pos = w[w > 0]
+            neg = w[w < 0]
+            if pos.size:
+                max_pos = float(pos[xp.argmax(xp.abs(pos))])
+                min_pos = float(pos[xp.argmin(xp.abs(pos))])
+            else:
+                max_pos = min_pos = float("nan")
+            if neg.size:
+                max_neg = float(neg[xp.argmin(neg)])
+                min_neg = float(neg[xp.argmax(neg)])
+            else:
+                max_neg = min_neg = float("nan")
             logger.info(
-                "eig iter %d: %d eigenpairs converged, next backward err %.3e",
+                "eig iter %d max+ %.3e min+ %.3e max- %.3e min- %.3e",
                 power_it,
-                num,
-                next_be,
+                max_pos,
+                min_pos,
+                max_neg,
+                min_neg,
             )
-        else:
-            logger.info("eig iter %d: all %d eigenpairs converged", power_it, num)
+            thresh = 1e-8
+            converged = be < thresh
+            num = int(xp.count_nonzero(converged))
+            if num < len(be):
+                next_be = float(be[~converged].min())
+                logger.info(
+                    "eig iter %d: %d eigenpairs converged, next backward err %.3e",
+                    power_it,
+                    num,
+                    next_be,
+                )
+            else:
+                logger.info("eig iter %d: all %d eigenpairs converged", power_it, num)
 
-    inv_cb = make_minres_callback(
-        rtol=args.inner_rtol, maxiter=args.inner_maxiter, backend=args.backend
-    )
-    w, V = power_solve_cb(
-        Asym,
-        V0,
-        inv_cb,
-        outer_iter=args.power_iters,
-        backend=args.backend,
-        callback=power_cb,
-    )
+        inv_cb = make_minres_callback(
+            rtol=args.inner_rtol, maxiter=args.inner_maxiter, backend=args.backend
+        )
+        w, V = power_solve_cb(
+            Asym,
+            V0,
+            inv_cb,
+            outer_iter=args.power_iters,
+            backend=args.backend,
+            callback=power_cb,
+        )
 
-    solver = DeflatedMinres(Asym, V, backend=args.backend)
+        solver = DeflatedMinres(Asym, V, backend=args.backend)
 
     minres_it = 0
 
@@ -193,9 +198,17 @@ def main():
             relres,
         )
 
-    x_sol, info = solver.solve(
-        rhs, tol=args.minres_tol, maxiter=args.minres_maxiter, callback=solve_cb
-    )
+    if solver is None:
+        minres_kw = {
+            Bk.minres_tol_kw: args.minres_tol,
+            "maxiter": args.minres_maxiter,
+            "callback": solve_cb,
+        }
+        x_sol, info = Bk.minres(Asym, rhs, **minres_kw)
+    else:
+        x_sol, info = solver.solve(
+            rhs, tol=args.minres_tol, maxiter=args.minres_maxiter, callback=solve_cb
+        )
     logger.info("MINRES info: %s", info)
 
 
