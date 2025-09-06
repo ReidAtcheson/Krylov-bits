@@ -17,6 +17,16 @@ from util import (
 logger = logging.getLogger(__name__)
 
 
+class _PreciseFormatter(logging.Formatter):
+    """Logging formatter with second + subsecond timestamp."""
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 def build_symmetrized(A, *, Bk):
     xp = Bk.xp
     sp = Bk.sp
@@ -66,13 +76,14 @@ def main():
 
     if args.log_file is None:
         args.log_file = f"nonsym_minres_{datetime.now():%Y%m%d_%H%M%S}.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-            logging.FileHandler(args.log_file),
-        ],
-    )
+    handlers = [
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(args.log_file),
+    ]
+    fmt = _PreciseFormatter("%(asctime)s %(message)s", "%H:%M:%S.%f")
+    for h in handlers:
+        h.setFormatter(fmt)
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
     logger.info("logging to %s", args.log_file)
 
     dtype = np.float32 if args.dtype == "fp32" else np.float64
@@ -107,7 +118,11 @@ def main():
     row_sums = xp.asarray(row_sums).ravel()
     Anorm = float(row_sums.max())
 
+    power_it = 0
+
     def power_cb(V, w, _):
+        nonlocal power_it
+        power_it += 1
         AV = Asym @ V
         R = AV - V * w[xp.newaxis, :]
         norms = xp.sqrt(xp.sum(xp.abs(R) ** 2, axis=0))
@@ -126,7 +141,8 @@ def main():
         else:
             max_neg = min_neg = float("nan")
         logger.info(
-            "eig max+ %.3e min+ %.3e max- %.3e min- %.3e",
+            "eig iter %d max+ %.3e min+ %.3e max- %.3e min- %.3e",
+            power_it,
             max_pos,
             min_pos,
             max_neg,
@@ -137,9 +153,14 @@ def main():
         num = int(xp.count_nonzero(converged))
         if num < len(be):
             next_be = float(be[~converged].min())
-            logger.info("%d eigenpairs converged, next backward err %.3e", num, next_be)
+            logger.info(
+                "eig iter %d: %d eigenpairs converged, next backward err %.3e",
+                power_it,
+                num,
+                next_be,
+            )
         else:
-            logger.info("all %d eigenpairs converged", num)
+            logger.info("eig iter %d: all %d eigenpairs converged", power_it, num)
 
     inv_cb = make_minres_callback(
         rtol=args.inner_rtol, maxiter=args.inner_maxiter, backend=args.backend
@@ -155,13 +176,22 @@ def main():
 
     solver = DeflatedMinres(Asym, V, backend=args.backend)
 
+    minres_it = 0
+
     def solve_cb(xh):
+        nonlocal minres_it
+        minres_it += 1
         xh_top = xh[:n]
         relerr = xp.max(
             xp.abs(x_true - xh_top) / xp.maximum(1e-14, xp.abs(x_true))
         )
         relres = float(xp.linalg.norm(b - A @ xh_top) / xp.linalg.norm(b))
-        logger.info("rel err %.3e rel resid %.3e", float(relerr), relres)
+        logger.info(
+            "minres iter %d rel err %.3e rel resid %.3e",
+            minres_it,
+            float(relerr),
+            relres,
+        )
 
     x_sol, info = solver.solve(
         rhs, tol=args.minres_tol, maxiter=args.minres_maxiter, callback=solve_cb
