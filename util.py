@@ -104,6 +104,22 @@ def _to_xp_array(x, xp):
         return _np.asarray(x)
 
 
+def _dtype_eps(xp, dtype):
+    sample = xp.asarray(0, dtype=dtype)
+    return xp.finfo(sample.real.dtype).eps
+
+
+def _apply_matmat(A, X, xp):
+    if hasattr(A, "__matmul__"):
+        return A @ X
+    if hasattr(A, "matmat"):
+        return A.matmat(X)
+    if hasattr(A, "matvec"):
+        cols = [A.matvec(X[:, i]) for i in range(X.shape[1])]
+        return xp.stack(cols, axis=1)
+    raise TypeError("A must support matmat or matvec operations")
+
+
 # ------------------------ Public API ------------------------
 
 
@@ -303,6 +319,50 @@ def power_cheb(
 
     return w, V
 
+
+def preconditioned_block_power(
+    A,
+    *,
+    apply_preconditioner: Callable[[object, object], object],
+    block_size: int,
+    iterations: int,
+    backend: str | None = None,
+    seed: int | None = None,
+    V0=None,
+):
+    """Run fixed-count preconditioned block power sweeps."""
+
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+
+    Bk = _detect_backend(V0, A, prefer=backend)
+    xp = Bk.xp
+
+    if V0 is None:
+        if not hasattr(A, "shape") or len(getattr(A, "shape")) != 2:
+            raise ValueError("A must expose shape when V0 is not provided")
+        n = A.shape[0]
+        rng = _np.random.default_rng(seed)
+        V0_host = rng.standard_normal((n, block_size))
+        dtype = getattr(A, "dtype", None) or xp.float64
+        V = xp.asarray(V0_host, dtype=dtype)
+    else:
+        V = _to_xp_array(V0, xp)
+        if V.ndim == 1:
+            V = V[:, None]
+        if V.shape[1] != block_size:
+            raise ValueError("V0 has incompatible number of columns")
+
+    V, _ = xp.linalg.qr(V, mode="reduced")
+
+    for _ in range(iterations):
+        W = apply_preconditioner(A, V)
+        W = _to_xp_array(W, xp)
+        V, _ = xp.linalg.qr(W, mode="reduced")
+
+    return V
 
 
 class DeflatedMinres:
@@ -611,6 +671,126 @@ class MinresMultiRHS:
 
 
 
+def block_minres(
+    A,
+    B,
+    *,
+    iterations: int,
+    backend: str | None = None,
+    tol: float = 0.0,
+    callback: Optional[Callable[[int, object], None]] = None,
+):
+    """Simplified block MINRES (look-back-2) with explicit reduced solves."""
+
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+
+    Bk = _detect_backend(B, A, prefer=backend)
+    xp = Bk.xp
+
+    B = _to_xp_array(B, xp)
+    if B.ndim == 1:
+        B = B[:, None]
+
+    n, p = B.shape
+    eps = _dtype_eps(xp, B.dtype)
+
+    norms_B = xp.sqrt(xp.maximum(xp.sum(xp.abs(B) ** 2, axis=0).real, eps))
+
+    R = B.copy()
+    V1, S0 = xp.linalg.qr(R, mode="reduced")
+    V_blocks = [V1]
+    diag_blocks: list[object] = []
+    sub_blocks: list[object] = []
+    B_prev = None
+    X = xp.zeros((n, p), dtype=B.dtype)
+
+    residual_history = []
+
+    def assemble_T(j: int):
+        dim = p * j
+        T = xp.zeros((dim, dim), dtype=B.dtype)
+        for idx in range(j):
+            row = idx * p
+            T[row : row + p, row : row + p] = diag_blocks[idx]
+            if idx > 0:
+                beta = sub_blocks[idx - 1]
+                T[row : row + p, row - p : row] = beta
+                T[row - p : row, row : row + p] = beta.T
+        return T
+
+    for j in range(1, iterations + 1):
+        Vj = V_blocks[-1]
+        W = _apply_matmat(A, Vj, xp)
+
+        Hj = Vj.T @ W
+        W = W - Vj @ Hj
+
+        if j >= 2:
+            Vjm1 = V_blocks[-2]
+            Hj_prev = Vjm1.T @ W
+            W = W - Vjm1 @ Hj_prev
+        else:
+            Hj_prev = None
+
+        Hj2 = Vj.T @ W
+        W = W - Vj @ Hj2
+        Hj = Hj + Hj2
+        if j >= 2:
+            Hj_prev2 = Vjm1.T @ W
+            W = W - Vjm1 @ Hj_prev2
+            Hj_prev = Hj_prev + Hj_prev2
+
+        normW = xp.linalg.norm(W)
+        if normW <= eps:
+            break
+
+        V_next, B_next = xp.linalg.qr(W, mode="reduced")
+
+        diag_blocks.append(0.5 * (Hj + Hj.T))
+        if j >= 2 and B_prev is not None:
+            sub_blocks.append(B_prev)
+
+        dim = p * j
+        T_k = assemble_T(j)
+        T_bar = xp.zeros((dim + p, dim), dtype=B.dtype)
+        T_bar[:dim, :] = T_k
+        T_bar[dim:, (j - 1) * p : j * p] = B_next
+
+        G = xp.zeros((dim + p, p), dtype=B.dtype)
+        G[:p, :] = S0
+
+        Yk, *_ = xp.linalg.lstsq(T_bar, G, rcond=None)
+
+        Vk = xp.concatenate(V_blocks, axis=1)
+        X = Vk @ Yk
+
+        AX = _apply_matmat(A, X, xp)
+        R = B - AX
+        res_norms = xp.sqrt(xp.maximum(xp.sum(xp.abs(R) ** 2, axis=0).real, eps))
+        residual_history.append(res_norms)
+
+        if callback is not None:
+            callback(j, X)
+
+        if tol > 0:
+            if xp.linalg.norm(res_norms / norms_B) <= tol:
+                break
+
+        B_prev = B_next
+        V_blocks.append(V_next)
+
+    info = {
+        "iterations": len(residual_history),
+        "residual_norms": residual_history[-1] if residual_history else xp.zeros((p,), dtype=B.dtype),
+        "relative_residuals": residual_history[-1] / norms_B if residual_history else xp.zeros((p,), dtype=B.dtype),
+        "residual_history": xp.stack(residual_history, axis=0) if residual_history else xp.zeros((0, p), dtype=B.dtype),
+    }
+
+    return X.squeeze() if X.shape[1] == 1 else X, info
+
+
+
 
 from typing import Callable, Tuple, Optional
 
@@ -708,4 +888,3 @@ def make_minres_callback(rtol: float = 1e-6, maxiter: int | None = None, *, back
 #
 #   A = random_nonsymmetric_matrix(1024, 4, seed=0, backend='cupy')
 #   ...
-
